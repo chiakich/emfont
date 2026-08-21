@@ -66,7 +66,7 @@ async function generateCSSMap(font_id, weight, state) {
 	});
 
 	writeCssFile(font_id, weight, cssBlocks, state);
-	return cssBlocks;
+	return cssBlocks.join("");
 }
 
 export { generateCSSMap };
