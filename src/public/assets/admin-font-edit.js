@@ -332,8 +332,7 @@ deleteButton.addEventListener("click", async () => {
 regenerateButton.addEventListener("click", async () => {
 	if (!selectedFontId) return;
 	const fontId = selectedFontId;
-	if (!window.confirm(`要重新生成 ${fontId} 的靜態字型、CSS 並切換版號嗎？`))
-		return;
+	if (!window.confirm(`要重新生成 ${fontId} 的靜態字型和 CSS 嗎？`)) return;
 	regenerateButton.disabled = true;
 	setStatus("正在重新生成");
 	try {
