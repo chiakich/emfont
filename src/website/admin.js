@@ -15,6 +15,7 @@ import { logger } from "../utils/logger.js";
 import { analyseFontsInBatches } from "../utils/read-font-file/analyseFonts.js";
 import { get_bullet, get_generated_static_floders } from "../bootstrap/init.js";
 import { regenerateAllStaticFont } from "../bootstrap/fontNoMin.js";
+import { generateCSSMap } from "./generateCSSMap.js";
 
 const redis = new Redis(process.env.REDIS_URL);
 const uploadJobs = new Map();
@@ -456,6 +457,24 @@ async function syncGeneratedStaticFontToMinio({ id, weight, version }) {
 	);
 }
 
+async function syncCssToMinio({ id, weight, css }) {
+	if (process.env.SYNC_WITH_MINIO !== "true") return;
+	if (!isMinioConfigured()) {
+		throw new Error("SYNC_WITH_MINIO=true, but MinIO is not configured");
+	}
+	const minioClient = createMinioClient();
+	const key = `css/${id}/${weight}.css`;
+	await minioClient.send(
+		new PutObjectCommand({
+			Bucket: process.env.MINIO_BUCKET,
+			Key: key,
+			Body: css,
+			ContentType: "text/css; charset=utf-8",
+		}),
+	);
+	logger.info(`Synced CSS to MinIO: ${key}`);
+}
+
 async function saveOriginalFontFile({ id, weight, extension, fileBase64 }) {
 	if (process.env.SYNC_WITH_MINIO === "true" && !isMinioConfigured()) {
 		throw new Error("SYNC_WITH_MINIO=true, but MinIO is not configured");
@@ -803,17 +822,17 @@ async function createDemoSentence(body) {
 }
 
 async function generateStaticForUploadedFont(job, font) {
+	const weights = font.weights?.length ? font.weights : [font.weight];
 	job.status = "running";
 	job.message = "正在分析字型支援的語言";
-	await analyseFontsInBatches([
-		{
-			fontName: font.id,
-			weights: String(font.weight),
-		},
-	]);
+	await analyseFontsInBatches(
+		weights.map(weight => ({ fontName: font.id, weights: String(weight) })),
+	);
 
 	job.message = "正在切割靜態字型包";
-	await removeStaticFontPackages(font.id, font.weight);
+	for (const weight of weights) {
+		await removeStaticFontPackages(font.id, weight);
+	}
 	const ok = await regenerateAllStaticFont(
 		job.state,
 		await get_generated_static_floders(),
@@ -824,14 +843,23 @@ async function generateStaticForUploadedFont(job, font) {
 	const staticFontVersion = await get_bullet();
 	job.state.static_font_version = staticFontVersion;
 	job.message = "正在同步靜態字型到 MinIO";
-	await syncGeneratedStaticFontToMinio({
-		id: font.id,
-		weight: font.weight,
-		version: staticFontVersion,
-	});
+	for (const weight of weights) {
+		await syncGeneratedStaticFontToMinio({
+			id: font.id,
+			weight,
+			version: staticFontVersion,
+		});
+	}
+	job.message = "正在生成並上傳 CSS";
+	for (const weight of weights) {
+		const css = await generateCSSMap(font.id, weight, job.state);
+		await syncCssToMinio({ id: font.id, weight, css });
+	}
 	await redis.del(`fontinfo:${font.id}`);
 	job.status = "completed";
-	job.message = "字型已新增，靜態字型也切好了";
+	job.message = font.weights
+		? "字型已重新生成，CSS 已更新"
+		: "字型已新增，靜態字型與 CSS 都切好了";
 	job.completedAt = new Date().toISOString();
 }
 
@@ -866,9 +894,9 @@ function queueStaticGenerationJob({ state, font, queuedMessage }) {
 	uploadJobs.set(jobId, job);
 
 	generateStaticForUploadedFont(job, font).catch(error => {
-		logger.error(`Admin font upload job failed: ${error.message}`);
+		logger.error(`Admin font job failed: ${error.message}`);
 		job.status = "failed";
-		job.message = "靜態字型切割失敗";
+		job.message = "字型處理失敗";
 		job.error = error.message;
 		job.completedAt = new Date().toISOString();
 	});
@@ -1089,6 +1117,31 @@ export default async function registerAdmin(app, state) {
 				status: "success",
 				message: "Font deleted",
 				fontId: req.params.fontId,
+			});
+		} catch (error) {
+			res.status(400).send({ status: "failed", message: error.message });
+		}
+	});
+
+	app.post("/api/admin/fonts/:fontId/regenerate", async (req, res) => {
+		if (!(await requireSuperAdminApi(req, res))) return;
+		try {
+			const font = await getFontRecord(req.params.fontId);
+			if (!font) {
+				return res
+					.status(404)
+					.send({ status: "failed", message: "Font not found" });
+			}
+			const jobId = queueStaticGenerationJob({
+				state,
+				font: { id: font.id, weights: font.weights || [] },
+				queuedMessage: "已排入重新生成佇列，等待切割靜態字型",
+			});
+			res.status(202).send({
+				status: "accepted",
+				message: "Font regeneration started.",
+				jobId,
+				fontUrl: fontInfoUrl(state, font.id),
 			});
 		} catch (error) {
 			res.status(400).send({ status: "failed", message: error.message });

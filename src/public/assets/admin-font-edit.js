@@ -9,6 +9,7 @@ const demoSentenceSelect = document.getElementById("demo-sentence-select");
 const sentenceCreateForm = document.getElementById("sentence-create-form");
 const logoutButton = document.getElementById("admin-logout");
 const deleteButton = document.getElementById("font-delete-button");
+const regenerateButton = document.getElementById("font-regenerate-button");
 
 let fontList = [];
 let demoSentences = [];
@@ -124,6 +125,7 @@ function fillForm(font) {
 	previewLink.href = font.fontUrl;
 	editForm.hidden = false;
 	deleteButton.disabled = !isSuperAdmin();
+	regenerateButton.disabled = !isSuperAdmin();
 	renderFontList();
 }
 
@@ -203,6 +205,7 @@ async function refreshAfterDelete(fontId) {
 	selectedFontId = "";
 	editForm.hidden = true;
 	deleteButton.disabled = true;
+	regenerateButton.disabled = true;
 	previewLink.href = "#";
 	await loadFontList();
 	setStatus(`已刪除 ${fontId}`, "completed");
@@ -323,6 +326,36 @@ deleteButton.addEventListener("click", async () => {
 	} catch (error) {
 		setStatus(error.message, "failed");
 		deleteButton.disabled = !isSuperAdmin();
+	}
+});
+
+regenerateButton.addEventListener("click", async () => {
+	if (!selectedFontId) return;
+	const fontId = selectedFontId;
+	if (!window.confirm(`要重新生成 ${fontId} 的靜態字型、CSS 並切換版號嗎？`))
+		return;
+	regenerateButton.disabled = true;
+	setStatus("正在重新生成");
+	try {
+		const res = await fetch(
+			`/api/admin/fonts/${encodeURIComponent(fontId)}/regenerate`,
+			{
+				method: "POST",
+				headers: headers(),
+				body: JSON.stringify({}),
+			},
+		);
+		if (redirectIfUnauthorized(res)) return;
+		const data = await res.json();
+		if (!res.ok) throw new Error(data.message || "Regenerate failed");
+		const job = await pollJob(data.jobId);
+		if (job?.status === "failed")
+			throw new Error(job.error || "Regeneration failed");
+		setStatus("字型已重新生成，CSS 已更新", "completed");
+	} catch (error) {
+		setStatus(error.message, "failed");
+	} finally {
+		regenerateButton.disabled = !isSuperAdmin();
 	}
 });
 
