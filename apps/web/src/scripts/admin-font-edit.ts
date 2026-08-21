@@ -11,6 +11,7 @@ const demoSentenceSelect = document.getElementById("demo-sentence-select") as HT
 const sentenceCreateForm = document.getElementById("sentence-create-form") as HTMLFormElement;
 const logoutButton = document.getElementById("admin-logout") as HTMLButtonElement;
 const deleteButton = document.getElementById("font-delete-button") as HTMLButtonElement;
+const regenerateButton = document.getElementById("font-regenerate-button") as HTMLButtonElement;
 const apiBase = document.documentElement.dataset.apiBase?.replace(/\/$/, "") ?? "";
 const apiUrl = (path: string) => `${apiBase}${path}`;
 
@@ -114,6 +115,7 @@ function fillForm(font) {
 	previewLink.href = font.fontUrl;
 	editForm.hidden = false;
 	deleteButton.disabled = false;
+	regenerateButton.disabled = false;
 	renderFontList();
 }
 
@@ -165,6 +167,7 @@ async function refreshAfterDelete(fontId) {
 	selectedFontId = "";
 	editForm.hidden = true;
 	deleteButton.disabled = true;
+	regenerateButton.disabled = true;
 	previewLink.href = "#";
 	await loadFontList();
 	setStatus(`已刪除 ${fontId}`, "completed");
@@ -283,6 +286,30 @@ deleteButton.addEventListener("click", async () => {
 	} catch (error) {
 		setStatus(error.message, "failed");
 		deleteButton.disabled = false;
+	}
+});
+
+regenerateButton.addEventListener("click", async () => {
+	if (!selectedFontId) return;
+	const fontId = selectedFontId;
+	if (!window.confirm(`要重新生成 ${fontId} 的靜態字型、CSS 並切換版號嗎？`)) return;
+	regenerateButton.disabled = true;
+	setStatus("正在重新生成");
+	try {
+		const res = await fetch(apiUrl(`/api/admin/fonts/${encodeURIComponent(fontId)}/regenerate`), {
+			method: "POST",
+			headers: headers()
+		});
+		if (redirectIfUnauthorized(res)) return;
+		const data = await res.json();
+		if (!res.ok) throw new Error(data.message || "Regenerate failed");
+		const job = await pollJob(data.jobId);
+		if (job?.status === "failed") throw new Error(job.error || "Regeneration failed");
+		setStatus("字型已重新生成，CSS 已更新", "completed");
+	} catch (error) {
+		setStatus(error.message, "failed");
+	} finally {
+		regenerateButton.disabled = false;
 	}
 });
 
