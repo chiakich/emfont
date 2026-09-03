@@ -1,9 +1,74 @@
 import path from "path";
 import fs from "fs";
 import subsetFont from "subset-font";
-import { readFontBuffer } from "../read-font-file/readFontBuffer.js";
+import { Font } from "fonteditor-core";
+import { getFontPartCharSets } from "../read-font-file/readFontBuffer.js";
 import { logger } from "../logger.js";
 const __dirname = import.meta.dirname;
+
+function sfntType(buffer) {
+	return buffer.toString("latin1", 0, 4) === "OTTO" ? "otf" : "ttf";
+}
+
+// Merge the requested glyphs of several split files into one sfnt.
+// Each part is subset first so fonteditor-core only parses a handful of glyphs.
+async function mergeFontParts(selected) {
+	let merged = null;
+	for (const { part, words } of selected) {
+		const sfnt = await subsetFont(fs.readFileSync(part.fullPath), words, {
+			targetFormat: "truetype",
+		});
+		const font = Font.create(sfnt, {
+			type: sfntType(sfnt),
+			hinting: false,
+			compound2simple: true,
+		});
+		if (!merged) {
+			merged = font;
+			continue;
+		}
+		const scale =
+			merged.get().head.unitsPerEm / font.get().head.unitsPerEm || 1;
+		merged.merge(font, { scale, adjustGlyf: false });
+	}
+	return merged.write({ type: "ttf", hinting: false, toBuffer: true });
+}
+
+// Pick the sfnt to subset from. Single-file weights are returned untouched;
+// split weights only merge the parts that actually own requested glyphs.
+async function loadSubsetSource(originalFontFamily, font_weight, words) {
+	const parts = getFontPartCharSets(originalFontFamily, font_weight);
+	if (parts.length === 0) return { success: false };
+	if (parts.length === 1) {
+		return { success: true, fontfile: fs.readFileSync(parts[0].fullPath) };
+	}
+	const needed = new Set(Array.from(words, char => char.codePointAt(0)));
+	const selected = [];
+	for (const part of parts) {
+		const owned = [];
+		for (const cp of needed) {
+			if (part.codePoints.has(cp)) {
+				owned.push(cp);
+				needed.delete(cp);
+			}
+		}
+		if (owned.length > 0) {
+			selected.push({
+				part,
+				words: owned.map(cp => String.fromCodePoint(cp)).join(""),
+			});
+		}
+	}
+	// No part owns any requested glyph: keep the old behaviour of emitting an empty subset.
+	if (selected.length === 0) {
+		return { success: true, fontfile: fs.readFileSync(parts[0].fullPath) };
+	}
+	if (selected.length === 1) {
+		return { success: true, fontfile: fs.readFileSync(selected[0].part.fullPath) };
+	}
+	return { success: true, fontfile: await mergeFontParts(selected) };
+}
+
 // generateFont: geneerate subset font and save to disk.
 async function generateFont(
 	originalFontFamily,
@@ -15,11 +80,12 @@ async function generateFont(
 ) {
 	try {
 		// 如果沒提供 buffer，就讀取字型檔
-		let type, success;
+		let success = true;
 		if (!fontfile) {
-			({ fontfile, type, success } = await readFontBuffer(
+			({ fontfile, success } = await loadSubsetSource(
 				originalFontFamily,
 				font_weight,
+				words,
 			));
 		}
 		if (!success) {
