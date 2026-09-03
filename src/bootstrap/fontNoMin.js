@@ -176,7 +176,7 @@ async function regenerateAllStaticFont(
 				fontName: ff_name, // 字型名稱（資料夾名稱）
 				weight: support_weights, // 字型的 weight（檔案名稱中的數字）
 			};
-			//讀字型檔案，取出所有支援的字型（分割檔取聯集）
+			// union of every split file of this weight
 			const charArray = getSupportedChars(ff_name, support_weights);
 			if (charArray === null) {
 				logger.warn(`讀取字型檔案失敗！${ff_name} ${support_weights}`);

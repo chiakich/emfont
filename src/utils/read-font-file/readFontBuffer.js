@@ -5,10 +5,9 @@ import fs from "fs";
 const __dirname = import.meta.dirname;
 const __Font_storge_path_base = path.join(__dirname, "../../", "_data", "original-fonts"); //projectroot/src/_data/original-fonts/
 
-// One weight may be split into several files when the glyph count exceeds the
-// 65535 sfnt limit (e.g. 全字庫 TW-Kai + Ext-B + Plus). The primary file is
-// `<weight>.<ext>`; extra parts are `<weight>-<n>.<ext>` with n >= 1.
-const FONT_FILE_RE = /^(\d+)(?:-(\d+))?\.(ttf|otf)$/i;
+// A weight may span several files because one sfnt holds at most 65535 glyphs (e.g. 全字庫 TW-Kai + Ext-B + Plus).
+// Primary file is `<weight>.<ext>`, extra parts are `<weight>-<n>.<ext>` with n >= 1.
+const FONT_FILE_RE = /^(\d+)(?:-([1-9]\d*))?\.(ttf|otf)$/i;
 const FONT_EXTENSIONS = ["ttf", "otf"];
 
 function fontFileName(weight, part = 0, extension = "ttf") {
@@ -25,7 +24,7 @@ function parseFontFileName(fileName) {
     };
 }
 
-// Every file belonging to a weight, ordered by part index. ttf wins over otf for the same part.
+// Every file of a weight ordered by part index; ttf wins over otf when both exist for one part.
 function listFontPartFiles(originalFontFamily, font_weight) {
     const dir = path.join(__Font_storge_path_base, originalFontFamily);
     if (!fs.existsSync(dir)) return [];
@@ -40,28 +39,7 @@ function listFontPartFiles(originalFontFamily, font_weight) {
     return Array.from(byPart.values()).sort((a, b) => a.part - b.part);
 }
 
-/**
- * 讀取字型檔案
- * @param {string} originalFontFamily 字型資料夾名稱
- * @param {string} font_weight 字重檔名（不含副檔名）
- * @param {boolean} use_fontkit 是否使用 fontkit 解析
- * @returns {Promise<{success: boolean, fontfile?: Buffer|object, type?: string, parts?: Array<{part: number, type: string, fullPath: string, fontfile: Buffer|object}>}>}
- */
-async function readFontBuffer(originalFontFamily, font_weight, use_fontkit = false) {
-    const files = listFontPartFiles(originalFontFamily, font_weight);
-    if (files.length === 0) {
-        console.error("找不到字體:", path.join(__Font_storge_path_base, originalFontFamily, `${font_weight}.ttf`));
-        return { success: false };
-    }
-    const parts = files.map(file => ({
-        ...file,
-        fontfile: use_fontkit ? fontkit.openSync(file.fullPath) : fs.readFileSync(file.fullPath),
-    }));
-    // fontfile/type keep the single-file shape for existing callers; parts carries every split file.
-    return { fontfile: parts[0].fontfile, type: parts[0].type, parts, success: true };
-}
-
-// Cache of per-part code point sets, invalidated when any part file changes on disk.
+// Per-part code point sets, keyed by family/weight and invalidated when any part changes on disk.
 const partCharSetCache = new Map();
 
 function partsSignature(files) {
@@ -73,48 +51,47 @@ function partsSignature(files) {
         .join("|");
 }
 
-/**
- * 取得每個分割檔支援的碼位
- * @returns {Array<{part: number, type: string, fullPath: string, codePoints: Set<number>}>} 找不到字型時為空陣列
- */
+// Returns [] when the weight has no files or a file vanished mid-read (admin replacement in progress).
 function getFontPartCharSets(originalFontFamily, font_weight) {
-    const files = listFontPartFiles(originalFontFamily, font_weight);
-    if (files.length === 0) return [];
-    const cacheKey = `${originalFontFamily}/${font_weight}`;
-    const signature = partsSignature(files);
-    const cached = partCharSetCache.get(cacheKey);
-    if (cached && cached.signature === signature) return cached.parts;
-    const parts = files.map(file => ({
-        ...file,
-        codePoints: new Set(fontkit.openSync(file.fullPath).characterSet),
-    }));
-    partCharSetCache.set(cacheKey, { signature, parts });
-    return parts;
+    try {
+        const files = listFontPartFiles(originalFontFamily, font_weight);
+        if (files.length === 0) return [];
+        const cacheKey = `${originalFontFamily}/${font_weight}`;
+        const signature = partsSignature(files);
+        const cached = partCharSetCache.get(cacheKey);
+        if (cached && cached.signature === signature) return cached.parts;
+        const parts = files.map(file => ({
+            ...file,
+            codePoints: new Set(fontkit.openSync(file.fullPath).characterSet),
+        }));
+        partCharSetCache.set(cacheKey, { signature, parts });
+        return parts;
+    } catch (err) {
+        if (err.code === "ENOENT") return [];
+        throw err;
+    }
 }
 
-/**
- * 取得該字重所有分割檔支援字元的聯集
- * @returns {string[]|null} 找不到字型時為 null
- */
+// Union of every char supported by all parts of a weight; null when the weight has no files.
 function getSupportedChars(originalFontFamily, font_weight) {
     const parts = getFontPartCharSets(originalFontFamily, font_weight);
     if (parts.length === 0) return null;
-    const codePoints = new Set();
-    for (const { codePoints: partCodePoints } of parts) {
-        for (const cp of partCodePoints) codePoints.add(cp);
+    const seen = new Set();
+    const chars = [];
+    for (const { codePoints } of parts) {
+        for (const cp of codePoints) {
+            if (cp === 0 || seen.has(cp)) continue;
+            seen.add(cp);
+            chars.push(String.fromCodePoint(cp));
+        }
     }
-    return Array.from(codePoints)
-        .map(cp => String.fromCodePoint(cp))
-        .filter(char => char !== "\x00");
+    return chars;
 }
 
 export {
-    readFontBuffer,
     listFontPartFiles,
     getFontPartCharSets,
     getSupportedChars,
     fontFileName,
     parseFontFileName,
-    FONT_FILE_RE,
-    FONT_EXTENSIONS,
 };

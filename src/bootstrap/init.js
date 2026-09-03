@@ -75,7 +75,6 @@ async function insertFontTypes() {
 			// 讀取該資料夾內的所有檔案
 			const fontFiles = await readdir(itemPath);
 			for (const fontFile of fontFiles) {
-				// accepts `400.ttf` and split parts like `400-1.ttf`
 				const parsed = parseFontFileName(fontFile);
 				if (!parsed) {
 					skipped.push(fontFile);

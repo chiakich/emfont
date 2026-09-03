@@ -15,7 +15,10 @@ import { logger } from "../utils/logger.js";
 import { analyseFontsInBatches } from "../utils/read-font-file/analyseFonts.js";
 import { get_bullet, get_generated_static_floders } from "../bootstrap/init.js";
 import { regenerateAllStaticFont } from "../bootstrap/fontNoMin.js";
-import { fontFileName } from "../utils/read-font-file/readFontBuffer.js";
+import {
+	fontFileName,
+	listFontPartFiles,
+} from "../utils/read-font-file/readFontBuffer.js";
 import { generateCSSMap } from "./generateCSSMap.js";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -494,6 +497,10 @@ async function saveOriginalFontFile({
 	}
 	const fontDir = path.join(originalFontsDir, id);
 	const fontBuffer = Buffer.from(fileBase64, "base64");
+	const existingParts = listFontPartFiles(id, weight);
+	if (part > 0 && !existingParts.some(file => file.part === 0)) {
+		throw new Error(`Upload the primary file ${fontFileName(weight, 0, extension)} before part ${part}`);
+	}
 
 	await syncOriginalFontToMinio({
 		id,
@@ -508,16 +515,25 @@ async function saveOriginalFontFile({
 		fontBuffer,
 	);
 
+	// Uploading a primary file resets the weight, so stale split parts from a previous upload must go too.
+	const stale = [];
 	for (const oldExtension of fontExtensions) {
-		if (oldExtension === extension) continue;
-		await rm(path.join(fontDir, fontFileName(weight, part, oldExtension)), {
+		if (oldExtension !== extension) stale.push({ part, extension: oldExtension });
+	}
+	if (part === 0) {
+		for (const file of existingParts) {
+			if (file.part > 0) stale.push({ part: file.part, extension: file.type });
+		}
+	}
+	for (const file of stale) {
+		await rm(path.join(fontDir, fontFileName(weight, file.part, file.extension)), {
 			force: true,
 		});
 		await deleteOriginalFontFromMinio({
 			id,
 			weight,
-			part,
-			extension: oldExtension,
+			part: file.part,
+			extension: file.extension,
 		});
 	}
 }
@@ -561,7 +577,6 @@ function assertUploadPayload(body) {
 	if (!["ttf", "otf"].includes(ext)) {
 		throw new Error("Only ttf and otf fonts are supported");
 	}
-	normalizeFontPart(body.part);
 	if (!allowedCategories.has(body.category)) {
 		throw new Error("Invalid category");
 	}
@@ -639,11 +654,12 @@ function assertDemoSentencePayload(body) {
 async function saveFontRecord(body) {
 	const id = body.id.trim();
 	const weight = Number(body.weight);
+	const part = normalizeFontPart(body.part);
 	const extension = normalizeFontExtension(body.extension);
 	await saveOriginalFontFile({
 		id,
 		weight,
-		part: normalizeFontPart(body.part),
+		part,
 		extension,
 		fileBase64: body.fileBase64,
 	});
@@ -675,7 +691,7 @@ async function saveFontRecord(body) {
 			repo_url = EXCLUDED.repo_url,
 			authors = EXCLUDED.authors,
 			demo_content_id = EXCLUDED.demo_content_id,
-			format = EXCLUDED.format
+			format = CASE WHEN $16::boolean THEN EXCLUDED.format ELSE font_family.format END
 		`,
 		[
 			id,
@@ -693,6 +709,7 @@ async function saveFontRecord(body) {
 			normalizeTextArray(body.authors),
 			Number(body.demoContentId || 1),
 			extension,
+			part === 0,
 		],
 	);
 
@@ -719,7 +736,8 @@ async function updateFontRecord(id, body) {
 			id,
 			...replacementFont,
 		});
-		body.format = replacementFont.extension;
+		// Split parts may differ in extension; the download link follows the primary file.
+		if (replacementFont.part === 0) body.format = replacementFont.extension;
 	}
 
 	await db.query(
