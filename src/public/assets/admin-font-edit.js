@@ -339,7 +339,13 @@ editForm.addEventListener("submit", async event => {
 	}
 });
 
-originalFilesRefresh.addEventListener("click", () => loadOriginalFiles());
+originalFilesRefresh.addEventListener("click", async () => {
+	try {
+		await loadOriginalFiles();
+	} catch (error) {
+		setStatus(error.message, "failed");
+	}
+});
 originalFilesUpload.addEventListener("click", async () => {
 	const files = Array.from(originalFilesInput.files || []);
 	if (files.length === 0)
