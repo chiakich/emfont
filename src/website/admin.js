@@ -838,6 +838,18 @@ async function saveOriginalFontBatch(id, files) {
 		if (names.has(name)) throw new Error(`Duplicate file: ${name}`);
 		names.add(name);
 	}
+	const primaryWeights = new Set(
+		uploads.filter(file => file.part === 0).map(file => file.weight),
+	);
+	for (const file of uploads) {
+		if (file.part === 0 || primaryWeights.has(file.weight)) continue;
+		if (!listFontPartFiles(id, file.weight).some(part => part.part === 0)) {
+			throw new Error(
+				`Upload the primary file ${fontFileName(file.weight, 0, file.extension)} before part ${file.part}`,
+			);
+		}
+		primaryWeights.add(file.weight);
+	}
 	uploads.sort((a, b) => a.weight - b.weight || a.part - b.part);
 	for (const file of uploads) {
 		await saveOriginalFontFile({
@@ -1268,6 +1280,16 @@ export default async function registerAdmin(app, state) {
 				req.params.fontId,
 				req.body?.files,
 			);
+			await db.query(
+				`UPDATE font_family
+				 SET weights = ARRAY(
+					 SELECT DISTINCT unnest(COALESCE(weights, ARRAY[]::smallint[]) || $2::smallint[])
+					 ORDER BY 1
+				 )
+				 WHERE id = $1`,
+				[font.id, weights],
+			);
+			await redis.del(`fontinfo:${font.id}`);
 			const jobId = queueStaticGenerationJob({
 				state,
 				font: { id: font.id, weights },
