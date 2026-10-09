@@ -347,6 +347,7 @@ originalFilesRefresh.addEventListener("click", async () => {
 	}
 });
 originalFilesUpload.addEventListener("click", async () => {
+	const fontId = selectedFontId;
 	const files = Array.from(originalFilesInput.files || []);
 	if (files.length === 0)
 		return setStatus("請選擇至少一個原始字型檔", "failed");
@@ -369,7 +370,7 @@ originalFilesUpload.addEventListener("click", async () => {
 			})),
 		);
 		const res = await fetch(
-			`/api/admin/fonts/${encodeURIComponent(selectedFontId)}/original-files`,
+			`/api/admin/fonts/${encodeURIComponent(fontId)}/original-files`,
 			{
 				method: "POST",
 				headers: headers(),
@@ -384,7 +385,8 @@ originalFilesUpload.addEventListener("click", async () => {
 		if (job?.status === "failed")
 			throw new Error(job.error || "Static generation failed");
 		originalFilesInput.value = "";
-		await loadOriginalFiles();
+		// 如果目前頁籤已經跳到別頁，就不會刷新。否則就會進 if 重新載入這頁。理想中跳出檔案已儲存，正在重新切割就可以關閉頁面
+		if (selectedFontId === fontId) await loadOriginalFiles(fontId);
 		setStatus("原始檔案已更新，靜態字型也切好了", "completed");
 	} catch (error) {
 		setStatus(error.message, "failed");
